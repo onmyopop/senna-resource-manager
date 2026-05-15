@@ -888,7 +888,10 @@ input,select,textarea{font-family:var(--font);font-size:13px;color:var(--text)}
         <span id="gist-status-text">Not connected</span>
       </div>
       <button class="sidebar-btn" onclick="openGistSetup()">⚙ Gist Settings</button>
-      <button class="sidebar-btn" onclick="syncFromGist()">↻ Sync now</button>
+      <div style="display:flex;gap:6px">
+        <button class="sidebar-btn" style="flex:1" onclick="syncFromGist()" title="Pull latest from Gist">↻ Pull</button>
+        <button class="sidebar-btn" style="flex:1;color:var(--accent2);border-color:var(--accent2)" onclick="pushToGist()" title="Push local data to Gist">⬆ Push</button>
+      </div>
     </div>
   </aside>
   <div class="main" id="main-area"></div>
@@ -1109,6 +1112,17 @@ function toggleTheme(){
 function saveLocal(){ localStorage.setItem('senna_db', JSON.stringify(DB)) }
 function uid(){ return Date.now().toString(36)+Math.random().toString(36).slice(2,6) }
 function esc(s){ return String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;') }
+function contrastColor(hex){
+  // Returns '#fff' or '#000' for best readability on given bg color
+  const c=hex.replace('#','')
+  const r=parseInt(c.slice(0,2),16)
+  const g=parseInt(c.slice(2,4),16)
+  const b=parseInt(c.slice(4,6),16)
+  // WCAG relative luminance
+  const toL=x=>{ const s=x/255; return s<=0.03928?s/12.92:Math.pow((s+0.055)/1.055,2.4) }
+  const L=0.2126*toL(r)+0.7152*toL(g)+0.0722*toL(b)
+  return L>0.179?'#1a1a1a':'#ffffff'
+}
 
 function setSyncing(v){
   const dot = document.getElementById('sync-dot')
@@ -1191,6 +1205,7 @@ async function pushToGist(){
     if(!res.ok) throw new Error('Status '+res.status)
     const pushed=await res.json()
     _lastKnownGistUpdatedAt=pushed.updated_at
+    toast('Pushed to Gist ✓','ok')
   }catch(e){ toast('Push failed: '+e.message,'err') }
   setSyncing(false)
 }
@@ -1738,6 +1753,14 @@ function shiftDate(isoDate, days){
 // ═══════════════════════════════════════════════════════════════════
 // RESOURCE GRID
 // ═══════════════════════════════════════════════════════════════════
+
+function renderRgChip(p){
+  const tc=contrastColor(p.color)
+  return '<div class="rg-proj-line" style="background:'+p.color+';border-radius:3px">'
+    +'<span class="rg-proj-name-sm" style="color:'+tc+'">'+esc(p.name)+'</span>'
+    +'<span class="rg-proj-md" style="color:'+tc+';opacity:.85">'+(p.md%1===0?p.md:p.md.toFixed(2))+'</span>'
+    +'</div>'
+}
 function renderResourceGrid(){
   const {start,end}=getEffectiveRange()
   const days=getDays(start,end)
@@ -1828,13 +1851,10 @@ function renderResourceGrid(){
             return '<div class="rg-cell'+(we?' we':'')+(hol?' holiday':'')+(tod?' today':'')+(over?' overloaded':'')+(fom2?' month-start':'')+'" style="width:'+CELL_W+'px" title="'+esc(tipLines)+'"'+cellClick+'>'
               +(projList.length>0&&!we&&!hol
                 ?'<div class="rg-cell-inner">'
-                  +projList.map(p=>'<div class="rg-proj-line" style="border-left:2px solid '+p.color+'">'
-                    +'<span class="rg-proj-name-sm" style="color:'+p.color+'">'+esc(p.name)+'</span>'
-                    +'<span class="rg-proj-md">'+(p.md%1===0?p.md:p.md.toFixed(2))+'</span>'
-                  +'</div>').join('')
+                  +projList.map(p=>renderRgChip(p)).join('')
                   +(over?'<div class="rg-warn">⚠</div>':'')
                 +'</div>'
-                :(!we&&!hol?'<div class="rg-empty-text">ว่าง</div>':''))
+                :'')
             +'</div>'
           }).join('')}
         </div>
@@ -2220,7 +2240,13 @@ function renderTopbarActions(){
       <button class="btn btn-ghost btn-sm" onclick="clearSelection()">✕ Cancel</button>`
   } else {
     el.innerHTML=`<button class="btn btn-ghost btn-sm${selectMode?' select-mode-btn active':''}" onclick="toggleSelectMode()">☑ Select</button>
-      <button class="btn btn-ghost btn-sm" onclick="exportGanttExcel()" title="Export to Excel">⬇ Export</button>
+      <div style="display:flex;align-items:center;gap:4px">
+        <select id="export-fmt-select" style="font-size:11px;padding:4px 6px;border:1px solid var(--border2);border-radius:var(--r);background:var(--bg2);color:var(--text);cursor:pointer">
+          <option value="merged">Export: รวม</option>
+          <option value="split">Export: แยก row</option>
+        </select>
+        <button class="btn btn-ghost btn-sm" onclick="exportGanttExcel()" title="Export to Excel">⬇</button>
+      </div>
       <button class="btn btn-primary btn-sm" onclick="openTaskModal()">+ Add Task</button>`
   }
 }
@@ -2317,9 +2343,15 @@ async function saveProject(pid){
   toast(pid?'Project updated ✓':'Project created ✓','ok')
 }
 async function deleteProjectDirect(id){
+  const taskCount=DB.tasks.filter(t=>t.projectId===id).length
+  if(taskCount>0){
+    const ok=confirm(`ลบ project นี้จะลบ task ทั้งหมด ${taskCount} รายการด้วย\nยืนยันมั้ย?`)
+    if(!ok) return
+  }
   DB.projects=DB.projects.filter(p=>p.id!==id)
+  DB.tasks=DB.tasks.filter(t=>t.projectId!==id)
   closeModal(); await saveDB(); render()
-  toast('Project deleted','ok')
+  toast(`Project deleted${taskCount>0?' ('+taskCount+' tasks removed)':''}`, 'ok')
 }
 
 // ═══════════════════════════════════════════════════════════════════
@@ -2534,7 +2566,25 @@ function parseXLSX(file){
 }
 
 function parseCSV(text){
-  const rows=text.split('\n').map(r=>r.split(',').map(c=>c.trim().replace(/^"|"$/g,'')))
+  // Proper CSV parser that handles quoted fields with commas inside
+  function parseCSVLine(line){
+    const fields=[]
+    let cur='', inQuote=false
+    for(let i=0;i<line.length;i++){
+      const ch=line[i]
+      if(ch==='"'){
+        if(inQuote&&line[i+1]==='"'){cur+='"';i++} // escaped quote
+        else inQuote=!inQuote
+      } else if(ch===','&&!inQuote){
+        fields.push(cur.trim())
+        cur=''
+      } else { cur+=ch }
+    }
+    fields.push(cur.trim())
+    return fields
+  }
+  const lines=text.split(/\r?\n/)
+  const rows=lines.map(l=>parseCSVLine(l))
   processImportRows(rows)
 }
 
@@ -2701,8 +2751,14 @@ function openGistSetup(){
       <div class="fg2"><label>Personal Access Token</label>
         <input type="password" id="gi-token" value="${esc(GIST.token)}" placeholder="github_pat_...">
       </div>
+      <div style="margin-top:16px;padding-top:12px;border-top:1px solid var(--border)">
+        <div style="font-size:11px;color:var(--text3);margin-bottom:8px">Danger zone</div>
+        <div style="display:flex;gap:8px">
+          <button class="btn btn-danger btn-sm" onclick="clearAllData()" style="flex:1">🗑 Clear all data</button>
+          <button class="btn btn-danger btn-sm" onclick="clearGist()" style="flex:1">✕ Disconnect Gist</button>
+        </div>
+      </div>
       <div class="modal-foot">
-        <button class="btn btn-danger btn-sm" onclick="clearGist()">Disconnect</button>
         <div class="modal-foot-r">
           <button class="btn btn-ghost btn-sm" onclick="closeModal()">Cancel</button>
           <button class="btn btn-primary btn-sm" onclick="saveGist()">Connect & Sync</button>
@@ -2716,6 +2772,33 @@ async function saveGist(){
   startAutoSync()
   localStorage.setItem('senna_gist',JSON.stringify(GIST))
   closeModal(); updateGistUI(); await syncFromGist()
+}
+function clearAllData(){
+  // Replace modal content with inline confirm
+  const modal=document.querySelector('#modal-overlay .modal')
+  if(!modal) return
+  modal.innerHTML=`
+    <div class="modal-head">
+      <div class="modal-title" style="color:var(--danger)">🗑 Clear all data</div>
+      <button class="modal-x" onclick="closeModal()">✕</button>
+    </div>
+    <div class="modal-body" style="gap:10px">
+      <div style="font-size:13px;color:var(--text)">ลบข้อมูลทั้งหมดในเครื่อง</div>
+      <div style="font-size:12px;color:var(--text3);line-height:1.6">
+        Projects, Resources และ Tasks <b style="color:var(--danger)">ทั้งหมดจะหายไป</b><br>
+        ไม่สามารถกู้คืนได้
+      </div>
+      <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:8px">
+        <button class="btn btn-ghost btn-sm" onclick="openGistSetup()">← Back</button>
+        <button class="btn btn-danger btn-sm" onclick="confirmClearAllData()">ยืนยัน ลบทั้งหมด</button>
+      </div>
+    </div>`
+}
+async function confirmClearAllData(){
+  DB={projects:[],resources:[],tasks:[],holidays:[]}
+  saveLocal()
+  closeModal(); render()
+  toast('Cleared all data ✓','ok')
 }
 function clearGist(){
   GIST={id:'',token:''}; localStorage.removeItem('senna_gist')
@@ -2846,15 +2929,45 @@ init()
 // ═══════════════════════════════════════════════
 // EXPORT EXCEL
 // ═══════════════════════════════════════════════
+function openExportModal(){
+  const m=document.getElementById('modal-overlay')
+  if(!m) return
+  m.style.display='flex'
+  document.getElementById('modal-body').innerHTML=`
+    <div class="modal-header"><span class="modal-title">Export Excel</span><button class="modal-close" onclick="closeModal()">✕</button></div>
+    <div style="padding:16px 20px">
+      <p style="font-size:12px;color:var(--text3);margin-bottom:12px">เลือกรูปแบบการ export</p>
+      <label class="export-option selected" onclick="document.querySelectorAll('.export-option').forEach(e=>e.classList.remove('selected'));this.classList.add('selected')">
+        <input type="radio" name="expfmt" value="merged" checked>
+        <div>
+          <div class="export-option-title">รวม Resource เป็นแถวเดียว</div>
+          <div class="export-option-desc">Hus, Aon, Earth อยู่ใน cell เดียวกัน — 1 แถวต่อ 1 task</div>
+        </div>
+      </label>
+      <label class="export-option" onclick="document.querySelectorAll('.export-option').forEach(e=>e.classList.remove('selected'));this.classList.add('selected')">
+        <input type="radio" name="expfmt" value="split">
+        <div>
+          <div class="export-option-title">แยก Resource ทีละแถว</div>
+          <div class="export-option-desc">แต่ละคนได้ row ของตัวเอง — task ที่มี 3 คนจะได้ 3 แถว</div>
+        </div>
+      </label>
+      <div style="display:flex;justify-content:flex-end;gap:8px;margin-top:16px">
+        <button class="btn btn-ghost btn-sm" onclick="closeModal()">Cancel</button>
+        <button class="btn btn-primary btn-sm" onclick="exportGanttExcel()">⬇ Export</button>
+      </div>
+    </div>`
+}
+
 function exportGanttExcel(){
+  const fmt=document.getElementById('export-fmt-select')?.value||'merged'
   if(typeof XLSX==='undefined'){
     const s=document.createElement('script')
     s.src='https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js'
-    s.onload=()=>_doExport()
+    s.onload=()=>_doExport(fmt)
     document.head.appendChild(s)
-  } else { _doExport() }
+  } else { _doExport(fmt) }
 }
-function _doExport(){
+function _doExport(fmt='merged'){
   const tasks=getFilteredTasks()
   const projMap=Object.fromEntries(DB.projects.map(p=>[p.id,p]))
   const resMap=Object.fromEntries(DB.resources.map(r=>[r.id,r]))
@@ -2866,9 +2979,19 @@ function _doExport(){
   }
   for(const t of tasks){
     const proj=projMap[t.projectId]||{name:''}
-    const resNames=(t.resources||[]).map(r=>resMap[r.resourceId]&&resMap[r.resourceId].name||'').filter(Boolean).join(', ')
-    const totalMd=(t.resources||[]).reduce((s,r)=>s+(r.manday||0),0)||t.manday||0
-    rows.push([t.sprint||'',proj.name||'',resNames,t.title||'',totalMd,fmtDate(t.startDate),fmtDate(t.endDate),t.status||''])
+    const resources=t.resources||[]
+    if(fmt==='split'&&resources.length>0){
+      // One row per resource
+      for(const r of resources){
+        const rName=resMap[r.resourceId]?.name||''
+        rows.push([t.sprint||'',proj.name||'',rName,t.title||'',r.manday||0,fmtDate(t.startDate),fmtDate(t.endDate),t.status||''])
+      }
+    } else {
+      // Merged: all resources in one cell
+      const resNames=resources.map(r=>resMap[r.resourceId]?.name||'').filter(Boolean).join(', ')
+      const totalMd=resources.reduce((s,r)=>s+(r.manday||0),0)||t.manday||0
+      rows.push([t.sprint||'',proj.name||'',resNames,t.title||'',totalMd,fmtDate(t.startDate),fmtDate(t.endDate),t.status||''])
+    }
   }
   const ws=XLSX.utils.aoa_to_sheet(rows)
   ws['!cols']=[{wch:12},{wch:14},{wch:24},{wch:40},{wch:9},{wch:13},{wch:13},{wch:10}]
