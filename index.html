@@ -1129,34 +1129,92 @@ function updateGistUI(){
     dot.className='sync-dot'
   }
 }
-async function syncFromGist(){
+let _lastKnownGistUpdatedAt = null  // track remote updated_at
+let _autoSyncInterval = null
+
+async function syncFromGist(silent=false){
   if(!GIST.id||!GIST.token) return
-  setSyncing(true)
+  if(!silent) setSyncing(true)
   try{
     const res=await fetch(`https://api.github.com/gists/${GIST.id}`,{
       headers:{Authorization:`Bearer ${GIST.token}`,Accept:'application/vnd.github+json'}
     })
     if(!res.ok) throw new Error('Status '+res.status)
     const data=await res.json()
+    const remoteUpdatedAt=data.updated_at
     const content=data.files['senna-db.json']?.content
-    if(content){ DB=JSON.parse(content); saveLocal(); toast('Synced ✓','ok'); render() }
-  }catch(e){ toast('Sync failed: '+e.message,'err') }
-  setSyncing(false)
+    if(content){
+      // Only update if remote is newer than what we last saw
+      if(_lastKnownGistUpdatedAt && remoteUpdatedAt === _lastKnownGistUpdatedAt){
+        if(!silent) toast('Already up to date','ok')
+        setSyncing(false)
+        return
+      }
+      _lastKnownGistUpdatedAt=remoteUpdatedAt
+      DB=JSON.parse(content)
+      saveLocal()
+      if(!silent) toast('Synced ✓','ok')
+      else toast('Auto-synced ✓','ok')
+      render()
+    }
+  }catch(e){ if(!silent) toast('Sync failed: '+e.message,'err') }
+  if(!silent) setSyncing(false)
+  else setSyncing(false)
 }
+
 async function pushToGist(){
   if(!GIST.id||!GIST.token) return
   setSyncing(true)
   try{
+    // Conflict check: fetch updated_at before push
+    const chk=await fetch(`https://api.github.com/gists/${GIST.id}`,{
+      headers:{Authorization:`Bearer ${GIST.token}`,Accept:'application/vnd.github+json'}
+    })
+    if(chk.ok){
+      const chkData=await chk.json()
+      const remoteUpdatedAt=chkData.updated_at
+      if(_lastKnownGistUpdatedAt && remoteUpdatedAt !== _lastKnownGistUpdatedAt){
+        // Remote was updated by someone else — ask user
+        setSyncing(false)
+        const ok=confirm('⚠️ ข้อมูลมีการอัปเดตจากคนอื่น\nถ้ากด OK จะ overwrite ข้อมูลของคนอื่น\nกด Cancel เพื่อดึงข้อมูลล่าสุดก่อน')
+        if(!ok){
+          await syncFromGist(false)
+          return
+        }
+      }
+    }
     const res=await fetch(`https://api.github.com/gists/${GIST.id}`,{
       method:'PATCH',
       headers:{Authorization:`Bearer ${GIST.token}`,Accept:'application/vnd.github+json','Content-Type':'application/json'},
       body:JSON.stringify({files:{'senna-db.json':{content:JSON.stringify(DB,null,2)}}})
     })
     if(!res.ok) throw new Error('Status '+res.status)
+    const pushed=await res.json()
+    _lastKnownGistUpdatedAt=pushed.updated_at
   }catch(e){ toast('Push failed: '+e.message,'err') }
   setSyncing(false)
 }
+
 async function saveDB(){ saveLocal(); if(GIST.id&&GIST.token) await pushToGist() }
+
+// ── Auto sync setup ──
+function startAutoSync(){
+  stopAutoSync()
+  if(!GIST.id||!GIST.token) return
+  // Poll every 3 minutes
+  _autoSyncInterval=setInterval(()=>{ syncFromGist(true) }, 3*60*1000)
+  // Sync when tab becomes visible again
+  document.addEventListener('visibilitychange', _onVisibilityChange)
+}
+function stopAutoSync(){
+  if(_autoSyncInterval){ clearInterval(_autoSyncInterval); _autoSyncInterval=null }
+  document.removeEventListener('visibilitychange', _onVisibilityChange)
+}
+function _onVisibilityChange(){
+  if(document.visibilityState==='visible' && GIST.id && GIST.token){
+    syncFromGist(true)
+  }
+}
 
 // ═══════════════════════════════════════════════════════════════════
 // TOAST
@@ -1634,9 +1692,12 @@ function initGanttDrag(){
         if(targetTaskId&&targetTaskId!==taskId){
           const srcIdx=DB.tasks.findIndex(t=>t.id===taskId)
           const tgtIdx=DB.tasks.findIndex(t=>t.id===targetTaskId)
-          if(srcIdx>-1&&tgtIdx>-1){
+          if(srcIdx>-1&&tgtIdx>-1&&srcIdx!==tgtIdx){
+            // Remove source first
             const [removed]=DB.tasks.splice(srcIdx,1)
-            const insertAt=lastPos==='top'?(tgtIdx>srcIdx?tgtIdx-1:tgtIdx):(tgtIdx>srcIdx?tgtIdx:tgtIdx+1)
+            // After splice, recalculate target index
+            const newTgtIdx=DB.tasks.findIndex(t=>t.id===targetTaskId)
+            const insertAt=lastPos==='top'?newTgtIdx:newTgtIdx+1
             DB.tasks.splice(Math.max(0,insertAt),0,removed)
             DB.tasks.forEach((t,i)=>t.order=i)
             await saveDB(); render()
@@ -1844,8 +1905,8 @@ function renderDatePicker(id, isoValue, minISO='', onChangeCb=''){
   const display=isoValue?fmtDMY(isoValue):''
   if(onChangeCb) _dpCallbacks[id]=onChangeCb
   return `<div class="dp-wrap" id="dpwrap-${id}">
-    <input class="dp-input" id="dpinput-${id}" value="${display}" placeholder="dd/mm/yyyy" readonly
-      onclick="toggleDP('${id}','${minISO}')">
+    <input class="dp-input" id="dpinput-${id}" value="${display}" placeholder="dd/mm/yyyy"
+      onclick="toggleDP('${id}','${minISO}')" onblur="dpInputBlur('${id}')" autocomplete="off" spellcheck="false">
     <div class="dp-popup hidden" id="dppop-${id}">
       <div class="dp-nav">
         <button class="dp-nav-btn" onclick="dpNav('${id}',-1)">‹</button>
@@ -1854,6 +1915,7 @@ function renderDatePicker(id, isoValue, minISO='', onChangeCb=''){
       </div>
       <div class="dp-grid" id="dpgrid-${id}"></div>
       <div class="dp-manual-row">
+        <button class="dp-today-btn" onclick="dpGoToday('${id}')">Today</button>
         <input class="dp-manual-input" id="dpman-${id}" placeholder="dd/mm/yyyy" maxlength="10">
         <button class="dp-manual-btn" onclick="dpManualSet('${id}','${onChangeCb}')">OK</button>
       </div>
@@ -1878,6 +1940,35 @@ function toggleDP(id,min){
   pop.classList.remove('hidden')
   openDPId=id
   dpRender(id)
+}
+function dpInputBlur(id){
+  const inp=document.getElementById('dpinput-'+id)
+  if(!inp) return
+  const val=inp.value.trim()
+  if(!val) return
+  const d=parseDMY(val)
+  if(d){
+    const iso=toISO(d)
+    if(dpState[id]) dpState[id].isoValue=iso
+    inp.value=fmtDMY(iso)
+    const cb=_dpCallbacks[id]
+    if(cb) evalDPCb(cb,iso)
+  } else {
+    // restore previous value
+    if(dpState[id]&&dpState[id].isoValue) inp.value=fmtDMY(dpState[id].isoValue)
+  }
+}
+function dpGoToday(id){
+  const s=dpState[id]; if(!s) return
+  const today=new Date()
+  s.year=today.getFullYear()
+  s.month=today.getMonth()
+  dpRender(id)
+  // highlight today briefly
+  setTimeout(()=>{
+    const todayBtn=document.querySelector(`#dpgrid-${id} .dp-day-btn.today`)
+    if(todayBtn) todayBtn.scrollIntoView({block:'nearest'})
+  },50)
 }
 function dpNav(id,dir){
   if(!dpState[id]) return
@@ -2622,6 +2713,7 @@ function openGistSetup(){
 async function saveGist(){
   GIST.id=document.getElementById('gi-id')?.value.trim()||''
   GIST.token=document.getElementById('gi-token')?.value.trim()||''
+  startAutoSync()
   localStorage.setItem('senna_gist',JSON.stringify(GIST))
   closeModal(); updateGistUI(); await syncFromGist()
 }
@@ -2745,7 +2837,7 @@ function init(){
   }
   if(!DB.holidays) DB.holidays=JSON.parse(JSON.stringify(SEED.holidays))
   updateGistUI()
-  if(GIST.id&&GIST.token) syncFromGist()
+  if(GIST.id&&GIST.token){ syncFromGist(); startAutoSync() }
   render()
 }
 init()
