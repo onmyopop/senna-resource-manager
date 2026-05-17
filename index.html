@@ -2993,7 +2993,13 @@ function _doExport(fmt='merged'){
       rows.push([t.sprint||'',proj.name||'',resNames,t.title||'',totalMd,fmtDate(t.startDate),fmtDate(t.endDate),t.status||''])
     }
   }
-  const ws=XLSX.utils.aoa_to_sheet(rows)
+  // Force date columns (index 5,6) to text to prevent Excel auto-converting DD/MM/YYYY
+  const wsData=rows.map((row,ri)=>row.map((cell,ci)=>{
+    if(ri===0) return cell  // header row as-is
+    if((ci===5||ci===6)&&cell) return {v:cell,t:'s'}  // start/end date as string
+    return cell
+  }))
+  const ws=XLSX.utils.aoa_to_sheet(wsData)
   ws['!cols']=[{wch:12},{wch:14},{wch:24},{wch:40},{wch:9},{wch:13},{wch:13},{wch:10}]
   const wb=XLSX.utils.book_new()
   XLSX.utils.book_append_sheet(wb,ws,'Tasks')
