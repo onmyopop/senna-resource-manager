@@ -2972,25 +2972,39 @@ function _doExport(fmt='merged'){
   const projMap=Object.fromEntries(DB.projects.map(p=>[p.id,p]))
   const resMap=Object.fromEntries(DB.resources.map(r=>[r.id,r]))
   const rows=[['Sprint','Project','Resource','Task','Manday','Start','End','Status']]
+  const MONTHS=['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec']
   function fmtDate(iso){
     if(!iso) return ''
     const[y,m,d]=iso.split('-')
-    return d+'/'+m+'/'+y
+    return d+'-'+MONTHS[parseInt(m,10)-1]+'-'+y
   }
-  for(const t of tasks){
-    const proj=projMap[t.projectId]||{name:''}
-    const resources=t.resources||[]
-    if(fmt==='split'&&resources.length>0){
-      // One row per resource
-      for(const r of resources){
-        const rName=resMap[r.resourceId]?.name||''
-        rows.push([t.sprint||'',proj.name||'',rName,t.title||'',r.manday||0,fmtDate(t.startDate),fmtDate(t.endDate),t.status||''])
+  // Order tasks same as Gantt: DB.projects order → sprint → DB.tasks order
+  const projOrder=DB.projects.map(p=>p.id).filter(pid=>tasks.some(t=>t.projectId===pid))
+  const grouped={}
+  for(const pid of projOrder){
+    grouped[pid]={}
+    for(const t of tasks.filter(t=>t.projectId===pid)){
+      const sp=t.sprint||'(No Sprint)'
+      if(!grouped[pid][sp]) grouped[pid][sp]=[]
+      grouped[pid][sp].push(t)
+    }
+  }
+  for(const pid of projOrder){
+    for(const sp of Object.keys(grouped[pid])){
+      for(const t of grouped[pid][sp]){
+        const proj=projMap[t.projectId]||{name:''}
+        const resources=t.resources||[]
+        if(fmt==='split'&&resources.length>0){
+          for(const r of resources){
+            const rName=resMap[r.resourceId]?.name||''
+            rows.push([t.sprint||'',proj.name||'',rName,t.title||'',r.manday||0,fmtDate(t.startDate),fmtDate(t.endDate),t.status||''])
+          }
+        } else {
+          const resNames=resources.map(r=>resMap[r.resourceId]?.name||'').filter(Boolean).join(', ')
+          const totalMd=resources.reduce((s,r)=>s+(r.manday||0),0)||t.manday||0
+          rows.push([t.sprint||'',proj.name||'',resNames,t.title||'',totalMd,fmtDate(t.startDate),fmtDate(t.endDate),t.status||''])
+        }
       }
-    } else {
-      // Merged: all resources in one cell
-      const resNames=resources.map(r=>resMap[r.resourceId]?.name||'').filter(Boolean).join(', ')
-      const totalMd=resources.reduce((s,r)=>s+(r.manday||0),0)||t.manday||0
-      rows.push([t.sprint||'',proj.name||'',resNames,t.title||'',totalMd,fmtDate(t.startDate),fmtDate(t.endDate),t.status||''])
     }
   }
   // Force date columns (index 5,6) to text to prevent Excel auto-converting DD/MM/YYYY
